@@ -1,7 +1,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse_macro_input, parse_quote, ImplItem, ItemFn, ItemImpl};
+use syn::{parse_macro_input, ImplItem, ItemFn, ItemImpl};
 
 #[proc_macro_attribute]
 pub fn function(
@@ -11,10 +11,11 @@ pub fn function(
     let mut function = parse_macro_input!(item as ItemFn);
     let instrumented_function_name = function.sig.ident.to_string();
 
-    let body = &function.block;
-    let new_body: syn::Block = impl_block(body, &instrumented_function_name);
-
-    function.block = Box::new(new_body);
+    impl_block(
+        &mut function.block,
+        &mut function.attrs,
+        &instrumented_function_name,
+    );
 
     (quote! {
         #function
@@ -76,9 +77,8 @@ pub fn all_functions(
                 continue 'func_loop;
             }
         }
-        let prev_block = &func.block;
         let calling_info = format!("{}: {}", struct_name, func.sig.ident);
-        func.block = impl_block(prev_block, &calling_info);
+        impl_block(&mut func.block, &mut func.attrs, &calling_info);
     }
 
     (quote!(
@@ -95,14 +95,10 @@ pub fn all_functions(
     feature = "profile-with-tracy"
 )))]
 fn impl_block(
-    body: &syn::Block,
+    _body: &mut syn::Block,
+    _attrs: &mut Vec<syn::Attribute>,
     _instrumented_function_name: &str,
-) -> syn::Block {
-    parse_quote! {
-        {
-            #body
-        }
-    }
+) {
 }
 
 #[cfg(any(
@@ -112,10 +108,11 @@ fn impl_block(
     feature = "profile-with-tracy"
 ))]
 fn impl_block(
-    body: &syn::Block,
+    body: &mut syn::Block,
+    _attrs: &mut Vec<syn::Attribute>,
     _instrumented_function_name: &str,
-) -> syn::Block {
-    parse_quote! {
+) {
+    *body = syn::parse_quote! {
         {
             profiling::function_scope!();
 
@@ -126,15 +123,15 @@ fn impl_block(
 
 #[cfg(feature = "profile-with-tracing")]
 fn impl_block(
-    body: &syn::Block,
+    _body: &mut syn::Block,
+    attrs: &mut Vec<syn::Attribute>,
     instrumented_function_name: &str,
-) -> syn::Block {
-    parse_quote! {
-        {
-            let _fn_span = profiling::tracing::span!(profiling::tracing::Level::INFO, #instrumented_function_name);
-            let _fn_span_entered = _fn_span.enter();
-
-            #body
-        }
-    }
+) {
+    attrs.push(syn::parse_quote! {
+        #[profiling::tracing::instrument(
+            skip_all,
+            name = #instrumented_function_name,
+            level = profiling::tracing::Level::INFO,
+        )]
+    });
 }
